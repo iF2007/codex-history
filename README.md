@@ -70,6 +70,8 @@ codex-history grep --compact "deadlock"
 
 codex-history export thr_123 --format markdown
 codex-history show --include-turns thr_123
+codex-history live thr_123
+codex-history live --interval 5 thr_123
 ```
 
 ## Command Surface
@@ -80,6 +82,11 @@ codex-history --version
 codex-history list
 codex-history show <thread-id>
 codex-history show --include-turns <thread-id>
+codex-history live <thread-id>
+codex-history live --interval <secs> <thread-id>
+codex-history live --tail <N> <thread-id>
+codex-history live --exit-on-complete <thread-id>
+codex-history live --include-steps <thread-id>
 codex-history search <query>
 codex-history search --fresh <query>
 codex-history search --include-thinking <query>

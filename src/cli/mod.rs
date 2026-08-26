@@ -22,6 +22,8 @@ use crate::model::{
 use crate::redact::{redact_human_text, to_redacted_json_string};
 use crate::search_scope::SearchScope;
 
+pub mod live;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Local,
@@ -64,6 +66,7 @@ pub enum Commands {
         thread_id: String,
         include_turns: bool,
     },
+    Live(live::LiveOptions),
     Search {
         query: String,
         fresh: bool,
@@ -201,6 +204,7 @@ impl Cli {
                     render_thread_detail(detail, *include_turns)
                 })
             }
+            Commands::Live(options) => live::run_live(&backend, options),
             Commands::Search { .. } => {
                 let Commands::Search {
                     query,
@@ -329,6 +333,7 @@ fn parse_command(args: &[String]) -> Result<ParsedCommandOutcome, String> {
     let command = match args[0].as_str() {
         "list" => parse_list(args)?,
         "show" => parse_show(args)?,
+        "live" => parse_live(args)?,
         "search" => parse_search(args)?,
         "grep" => parse_grep(args)?,
         "export" => parse_export_command(args)?,
@@ -376,6 +381,78 @@ fn parse_show(args: &[String]) -> Result<ParsedCommandOutcome, String> {
                 .ok_or_else(|| "missing required argument: show <thread-id>".to_string())?,
             include_turns,
         },
+        consumed: args.len(),
+    }))
+}
+
+fn parse_live(args: &[String]) -> Result<ParsedCommandOutcome, String> {
+    if args.len() == 2 && is_help_flag(&args[1]) {
+        return Ok(ParsedCommandOutcome::PrintHelp(live_help()));
+    }
+
+    let mut thread_id = None;
+    let mut interval_secs = 3u64;
+    let mut tail = None;
+    let mut exit_on_complete = false;
+    let mut include_steps = false;
+    let mut once = false;
+
+    let mut index = 1;
+    while index < args.len() {
+        let arg = &args[index];
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCommandOutcome::PrintHelp(live_help())),
+            "-i" | "--interval" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| format!("missing value for {arg}"))?;
+                interval_secs = value.parse::<u64>().map_err(|_| {
+                    format!("invalid refresh interval `{value}`; expected positive integer")
+                })?;
+                if interval_secs == 0 {
+                    return Err("refresh interval must be greater than 0".to_string());
+                }
+            }
+            "--tail" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "missing value for --tail".to_string())?;
+                let n = value.parse::<usize>().map_err(|_| {
+                    format!("invalid tail count `{value}`; expected positive integer")
+                })?;
+                if n == 0 {
+                    return Err("tail count must be greater than 0".to_string());
+                }
+                tail = Some(n);
+            }
+            "--exit-on-complete" => {
+                exit_on_complete = set_flag(exit_on_complete, "--exit-on-complete")?;
+            }
+            "--include-steps" => {
+                include_steps = set_flag(include_steps, "--include-steps")?;
+            }
+            "--once" => {
+                once = set_flag(once, "--once")?;
+            }
+            arg if arg.starts_with('-') => return Err(format!("unknown option: {arg}")),
+            _ if thread_id.is_none() => thread_id = Some(arg.clone()),
+            _ => return Err(format!("unexpected argument: {arg}")),
+        }
+        index += 1;
+    }
+
+    Ok(ParsedCommandOutcome::Run(ParsedCommand {
+        command: Commands::Live(live::LiveOptions {
+            thread_id: thread_id
+                .ok_or_else(|| "missing required argument: live <thread-id>".to_string())?,
+            interval_secs,
+            tail,
+            exit_on_complete,
+            include_steps,
+            once,
+        }),
         consumed: args.len(),
     }))
 }
@@ -651,7 +728,7 @@ fn unexpected_arguments(args: &[String]) -> String {
 }
 
 fn top_level_help() -> String {
-    "codex-history\nRead-only CLI for locally accessible Codex session history\n\nUSAGE:\n  codex-history [OPTIONS] <COMMAND>\n\nOPTIONS:\n  --backend <local|auto>\n  --json\n  --ndjson\n  --quiet\n  --verbose\n  --no-color\n  -V, --version\n  -h, --help\n\nCOMMANDS:\n  list\n  show <thread-id>\n  search <query>\n  grep <pattern>\n  export <thread-id>\n  doctor\n  index <build|refresh|doctor|drop>\n\nRun `codex-history <COMMAND> --help` for command usage."
+    "codex-history\nRead-only CLI for locally accessible Codex session history\n\nUSAGE:\n  codex-history [OPTIONS] <COMMAND>\n\nOPTIONS:\n  --backend <local|auto>\n  --json\n  --ndjson\n  --quiet\n  --verbose\n  --no-color\n  -V, --version\n  -h, --help\n\nCOMMANDS:\n  list\n  show <thread-id>\n  live <thread-id>\n  search <query>\n  grep <pattern>\n  export <thread-id>\n  doctor\n  index <build|refresh|doctor|drop>\n\nRun `codex-history <COMMAND> --help` for command usage."
         .to_string()
 }
 
@@ -671,6 +748,11 @@ fn list_help() -> String {
 
 fn show_help() -> String {
     "codex-history show\nShow thread metadata and optionally full turns\n\nUSAGE:\n  codex-history [OPTIONS] show [--include-turns] <thread-id>\n\nOPTIONS:\n  --include-turns\n  -h, --help"
+        .to_string()
+}
+
+fn live_help() -> String {
+    "codex-history live\nContinuously stream a session conversation\n\nUSAGE:\n  codex-history [OPTIONS] live [--interval <secs>] [--tail <N>] [--exit-on-complete] [--include-steps] [--once] <thread-id>\n\nOPTIONS:\n  -i, --interval <secs>\n  --tail <N>\n  --exit-on-complete\n  --include-steps\n  --once\n  -h, --help"
         .to_string()
 }
 
@@ -1804,5 +1886,97 @@ mod tests {
         let error = Cli::parse(vec!["--quiet".into(), "--verbose".into(), "list".into()])
             .expect_err("parse should fail");
         assert_eq!(error, "cannot combine --quiet and --verbose");
+    }
+
+    #[test]
+    fn parses_live_arguments_and_defaults() {
+        let outcome =
+            Cli::parse(vec!["live".into(), "thr_123".into()]).expect("parse should succeed");
+        let ParseOutcome::Run(cli) = outcome else {
+            panic!("expected Run");
+        };
+        assert_eq!(
+            cli.command,
+            Commands::Live(live::LiveOptions {
+                thread_id: "thr_123".into(),
+                interval_secs: 3,
+                tail: None,
+                exit_on_complete: false,
+                include_steps: false,
+                once: false,
+            })
+        );
+
+        let outcome = Cli::parse(vec![
+            "live".into(),
+            "-i".into(),
+            "5".into(),
+            "--tail".into(),
+            "2".into(),
+            "--exit-on-complete".into(),
+            "--include-steps".into(),
+            "--once".into(),
+            "thr_456".into(),
+        ])
+        .expect("parse should succeed");
+        let ParseOutcome::Run(cli) = outcome else {
+            panic!("expected Run");
+        };
+        assert_eq!(
+            cli.command,
+            Commands::Live(live::LiveOptions {
+                thread_id: "thr_456".into(),
+                interval_secs: 5,
+                tail: Some(2),
+                exit_on_complete: true,
+                include_steps: true,
+                once: true,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_live_arguments() {
+        let error = Cli::parse(vec!["live".into()]).expect_err("parse should fail");
+        assert_eq!(error, "missing required argument: live <thread-id>");
+
+        let error = Cli::parse(vec![
+            "live".into(),
+            "-i".into(),
+            "0".into(),
+            "thr_123".into(),
+        ])
+        .expect_err("parse should fail");
+        assert_eq!(error, "refresh interval must be greater than 0");
+
+        let error = Cli::parse(vec![
+            "live".into(),
+            "-i".into(),
+            "abc".into(),
+            "thr_123".into(),
+        ])
+        .expect_err("parse should fail");
+        assert_eq!(
+            error,
+            "invalid refresh interval `abc`; expected positive integer"
+        );
+
+        let error = Cli::parse(vec![
+            "live".into(),
+            "--tail".into(),
+            "0".into(),
+            "thr_123".into(),
+        ])
+        .expect_err("parse should fail");
+        assert_eq!(error, "tail count must be greater than 0");
+
+        let error = Cli::parse(vec![
+            "live".into(),
+            "--once".into(),
+            "--once".into(),
+            "thr_123".into(),
+        ])
+        .expect_err("parse should fail");
+        assert_eq!(error, "duplicate option: --once");
     }
 }

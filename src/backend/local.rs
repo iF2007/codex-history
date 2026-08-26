@@ -72,11 +72,12 @@ impl LocalBackend {
         thread_id: &str,
         include_turns: bool,
     ) -> Result<Option<ThreadDetail>, String> {
-        let mut thread = self
-            .scan_threads()?
-            .threads
-            .into_iter()
-            .find(|thread| thread.summary.thread_id == thread_id);
+        let files = match self.find_thread_files(thread_id) {
+            Ok(files) => files,
+            Err(_) => return Ok(None),
+        };
+
+        let mut thread = self.parse_thread_files(&files)?;
 
         if let Some(detail) = thread.as_mut() {
             if !include_turns {
@@ -85,6 +86,94 @@ impl LocalBackend {
         }
 
         Ok(thread)
+    }
+
+    pub fn find_thread_files(&self, thread_id: &str) -> Result<Vec<PathBuf>, String> {
+        let mut all_files = Vec::new();
+        for root in &self.roots {
+            if !root.exists {
+                continue;
+            }
+            let (files, _) = collect_session_log_files(&root.path);
+            all_files.extend(files);
+        }
+
+        // Fast pass: Check if filename contains thread_id
+        let mut matching_files = Vec::new();
+        for file in &all_files {
+            if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+                if name.contains(thread_id) {
+                    matching_files.push(file.clone());
+                }
+            }
+        }
+
+        if !matching_files.is_empty() {
+            let mut verified = Vec::new();
+            for file in matching_files {
+                if file_matches_thread_id(&file, thread_id) {
+                    verified.push(file);
+                }
+            }
+            if !verified.is_empty() {
+                verified.sort();
+                return Ok(verified);
+            }
+        }
+
+        // Fallback pass: read initial lines of files containing thread_id
+        let mut fallback_matches = Vec::new();
+        for file in all_files {
+            if file_matches_thread_id(&file, thread_id) {
+                fallback_matches.push(file);
+            }
+        }
+
+        if !fallback_matches.is_empty() {
+            fallback_matches.sort();
+            return Ok(fallback_matches);
+        }
+
+        Err(format!("thread not found: {thread_id}"))
+    }
+
+    pub fn parse_thread_files(&self, files: &[PathBuf]) -> Result<Option<ThreadDetail>, String> {
+        let mut pending_commands = BTreeMap::new();
+        let mut detail: Option<ThreadDetail> = None;
+        let mut warnings = Vec::new();
+
+        for file in files {
+            let mut report =
+                parse_session_log_incremental(file, pending_commands.into_iter().collect())
+                    .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+            pending_commands = report.take_pending_commands().into_iter().collect();
+
+            if let Some(parsed) = report.detail {
+                match detail.as_mut() {
+                    Some(existing) => merge_thread_detail(existing, parsed),
+                    None => detail = Some(parsed),
+                }
+            }
+        }
+
+        if let Some(thread) = detail {
+            let mut threads_by_id = BTreeMap::new();
+            threads_by_id.insert(thread.summary.thread_id.clone(), thread);
+            for pending in pending_commands.into_values() {
+                attach_pending_command(&mut threads_by_id, pending, &mut warnings);
+            }
+            if let Some(mut thread) =
+                threads_by_id.remove(&threads_by_id.keys().next().cloned().unwrap_or_default())
+            {
+                recompute_thread_counts(&mut thread);
+                let mut map = BTreeMap::new();
+                map.insert(thread.summary.thread_id.clone(), thread);
+                apply_session_index_names(&mut map);
+                return Ok(map.into_values().next());
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn list_thread_details(&self) -> Result<Vec<ThreadDetail>, String> {
@@ -378,6 +467,36 @@ fn apply_session_index_names_to_summaries(threads: &mut BTreeMap<String, ThreadS
             thread.name = Some(name);
         }
     }
+}
+
+fn file_matches_thread_id(path: &Path, thread_id: &str) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(10) {
+        let Ok(line) = line else {
+            break;
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !line.contains(thread_id) {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&line) {
+            if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+                if let Some(payload_id) = value
+                    .get("payload")
+                    .and_then(|p| p.get("id"))
+                    .and_then(Value::as_str)
+                {
+                    return payload_id == thread_id;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn merge_thread_detail(existing: &mut ThreadDetail, incoming: ThreadDetail) {
