@@ -77,6 +77,16 @@ fn live_returns_error_for_nonexistent_thread() {
 }
 
 #[test]
+fn live_rejects_json_output_mode() {
+    for flag in ["--json", "--ndjson"] {
+        let output = run_with_root(&[flag, "live", "thr_simple", "--once"], &sample_root());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("cannot combine {flag} with live")));
+    }
+}
+
+#[test]
 fn live_filters_developer_preambles_in_response_item_session() {
     let output = run_with_root(
         &["live", "thr_response_item", "--once"],

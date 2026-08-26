@@ -204,7 +204,19 @@ impl Cli {
                     render_thread_detail(detail, *include_turns)
                 })
             }
-            Commands::Live(options) => live::run_live(&backend, options),
+            Commands::Live(options) => {
+                if self.global.json || self.global.ndjson {
+                    return Err(format!(
+                        "cannot combine {} with live",
+                        if self.global.ndjson {
+                            "--ndjson"
+                        } else {
+                            "--json"
+                        }
+                    ));
+                }
+                live::run_live(&backend, options)
+            }
             Commands::Search { .. } => {
                 let Commands::Search {
                     query,

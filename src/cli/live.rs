@@ -65,19 +65,28 @@ fn initialize_tail(
     let Some(n) = tail else {
         return;
     };
-    let total = detail.turns.len();
-    if total > n {
-        let skip_count = total - n;
-        for turn in &detail.turns[..skip_count] {
-            progress.insert(
-                turn.turn_id.clone(),
-                TurnProgress {
-                    user_displayed: true,
-                    steps_displayed: usize::MAX,
-                    agent_displayed: true,
-                },
-            );
+    let completed_turns = detail
+        .turns
+        .iter()
+        .filter(|turn| turn.status == "completed")
+        .count();
+    let completed_to_skip = completed_turns.saturating_sub(n);
+    let mut skipped = 0;
+
+    for turn in &detail.turns {
+        if turn.status != "completed" || skipped >= completed_to_skip {
+            continue;
         }
+
+        progress.insert(
+            turn.turn_id.clone(),
+            TurnProgress {
+                user_displayed: true,
+                steps_displayed: usize::MAX,
+                agent_displayed: true,
+            },
+        );
+        skipped += 1;
     }
 }
 
@@ -228,6 +237,10 @@ fn extract_turn_steps(turn: &Turn) -> Vec<String> {
                 let text = tool.tool.as_deref().unwrap_or("(tool)");
                 steps.push(format!("tool: {text}"));
             }
+            Item::WebSearch(search) => {
+                let text = search.query.as_deref().unwrap_or("(web search)");
+                steps.push(format!("web search: {text}"));
+            }
             Item::FileChange(fc) => {
                 let path = fc
                     .path
@@ -257,6 +270,17 @@ fn extract_turn_steps(turn: &Turn) -> Vec<String> {
                     }
                 }
             }
+            Item::Other(other) if other.kind == "custom_tool_call" => {
+                let name = other
+                    .data
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(tool)");
+                steps.push(format!("tool: {name}"));
+            }
+            Item::Other(other) if other.kind == "web_search_call" => {
+                steps.push("tool: web_search".into());
+            }
             _ => {}
         }
     }
@@ -270,5 +294,86 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
         format!("{truncated}...")
     } else {
         text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use chrono::{TimeZone, Utc};
+    use serde_json::Value;
+
+    use super::*;
+    use crate::model::{ThreadSummary, UnknownItem};
+
+    fn thread_detail(turns: Vec<Turn>) -> ThreadDetail {
+        ThreadDetail {
+            summary: ThreadSummary {
+                thread_id: "thread".into(),
+                name: None,
+                preview: None,
+                created_at: Utc.timestamp_opt(0, 0).single().expect("timestamp"),
+                updated_at: None,
+                cwd: None,
+                source_kind: None,
+                model_provider: None,
+                ephemeral: None,
+                status: Some("running".into()),
+            },
+            turns,
+            items_count: 0,
+            commands_count: 0,
+            files_changed_count: 0,
+        }
+    }
+
+    fn turn(turn_id: &str, status: &str, items: Vec<Item>) -> Turn {
+        Turn {
+            turn_id: turn_id.into(),
+            status: status.into(),
+            started_at: None,
+            completed_at: None,
+            items,
+        }
+    }
+
+    #[test]
+    fn tail_skips_old_completed_turns_but_keeps_active_turn() {
+        let detail = thread_detail(vec![
+            turn("turn_1", "completed", Vec::new()),
+            turn("turn_2", "completed", Vec::new()),
+            turn("turn_3", "in_progress", Vec::new()),
+        ]);
+        let mut progress = HashMap::new();
+
+        initialize_tail(&detail, Some(1), &mut progress);
+
+        assert!(progress.contains_key("turn_1"));
+        assert!(!progress.contains_key("turn_2"));
+        assert!(!progress.contains_key("turn_3"));
+    }
+
+    #[test]
+    fn includes_custom_tool_and_web_search_steps() {
+        let detail = thread_detail(vec![turn(
+            "turn_1",
+            "in_progress",
+            vec![
+                Item::Other(UnknownItem {
+                    kind: "custom_tool_call".into(),
+                    data: BTreeMap::from([("name".into(), Value::String("exec".into()))]),
+                }),
+                Item::Other(UnknownItem {
+                    kind: "web_search_call".into(),
+                    data: BTreeMap::new(),
+                }),
+            ],
+        )]);
+
+        assert_eq!(
+            extract_turn_steps(&detail.turns[0]),
+            ["tool: exec", "tool: web_search"]
+        );
     }
 }
