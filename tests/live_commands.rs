@@ -17,6 +17,10 @@ fn response_item_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/local_history/response_item_root")
 }
 
+fn cross_shard_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/local_history/cross_shard_root")
+}
+
 #[test]
 fn live_outputs_conversation_once_for_simple_thread() {
     let output = run_with_root(&["live", "thr_simple", "--once"], &sample_root());
@@ -41,6 +45,17 @@ fn live_includes_steps_when_flag_provided() {
     assert!(stdout.contains("[User] (turn 1)"));
     assert!(stdout.contains("[Step] (turn 2)"));
     assert!(stdout.contains("command: cargo test cli::tests"));
+    assert!(stdout.contains("progress: I found the leftover argv issue."));
+}
+
+#[test]
+fn live_outputs_completion_message_from_cross_shard_session() {
+    let output = run_with_root(&["live", "thr_cross_shard", "--once"], &cross_shard_root());
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Run the parser tests."));
+    assert!(stdout.contains("[Assistant] (turn 1)"));
+    assert!(stdout.contains("Parser tests passed."));
 }
 
 #[test]

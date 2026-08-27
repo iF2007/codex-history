@@ -163,6 +163,7 @@ impl ParseState {
             started_at,
             completed_at: None,
             items: Vec::new(),
+            final_agent_message: None,
         });
         self.current_turn_id = Some(turn_id.to_string());
         next_index
@@ -287,6 +288,12 @@ impl ParseState {
             self.turns[index].completed_at = completed_at;
         }
         true
+    }
+
+    fn set_final_agent_message(&mut self, turn_id: &str, text: String) {
+        if let Some(index) = self.turn_index.get(turn_id).copied() {
+            self.turns[index].final_agent_message = Some(text);
+        }
     }
 
     fn finish(
@@ -429,9 +436,17 @@ fn attach_runtime_event(
             ) else {
                 return false;
             };
+            let last_agent_message = payload
+                .get("last_agent_message")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_string);
             let completed =
                 state.update_turn_status(&turn_id, "completed", line_timestamp.or(raw.timestamp));
             if completed {
+                if let Some(text) = last_agent_message {
+                    state.set_final_agent_message(&turn_id, text);
+                }
                 if let Some(thread) = state.thread.as_mut() {
                     thread.status = Some("completed".into());
                 }
@@ -460,7 +475,10 @@ fn attach_runtime_event(
             let Some(text) = payload.get("message").and_then(Value::as_str) else {
                 return false;
             };
-            state.add_item(&turn_id, Item::AgentMessage(message_item(text)))
+            state.add_item(
+                &turn_id,
+                Item::AgentMessage(message_item_with_phase(text, payload.get("phase"))),
+            )
         }
         "agent_reasoning" => {
             let Some(turn_id) = state.resolve_turn_id(
@@ -635,6 +653,10 @@ fn attach_response_message(
                 .map(str::to_string)
         }),
         attributes: payload_without_keys(payload, &["type", "turn_id", "content", "text"]),
+        phase: payload
+            .get("phase")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
 
     match payload.get("role").and_then(Value::as_str) {
@@ -714,8 +736,19 @@ fn parse_json_argument_string(value: &str) -> Value {
 }
 
 fn message_item(text: &str) -> crate::model::MessageItem {
-    serde_json::from_value(serde_json::json!({ "text": text }))
-        .expect("message item should deserialize")
+    crate::model::MessageItem {
+        text: Some(text.to_string()),
+        attributes: BTreeMap::new(),
+        phase: None,
+    }
+}
+
+fn message_item_with_phase(text: &str, phase: Option<&Value>) -> crate::model::MessageItem {
+    let mut item = message_item(text);
+    if let Some(phase) = phase.and_then(Value::as_str) {
+        item.phase = Some(phase.to_string());
+    }
+    item
 }
 
 fn attach_legacy_thread_event(value: Value, state: &mut ParseState) -> bool {
@@ -961,6 +994,7 @@ impl RawTurnEvent {
             started_at: self.started_at,
             completed_at: self.completed_at,
             items: Vec::new(),
+            final_agent_message: None,
         }
     }
 }
@@ -1001,6 +1035,17 @@ mod tests {
         assert_eq!(
             detail.summary.preview.as_deref(),
             Some("Please inspect the parser regression.")
+        );
+        assert_eq!(
+            detail.turns[0].items.iter().find_map(|item| match item {
+                Item::AgentMessage(message) => message.phase.as_deref(),
+                _ => None,
+            }),
+            Some("commentary")
+        );
+        assert_eq!(
+            detail.turns[1].final_agent_message.as_deref(),
+            Some("Tightened parser validation.")
         );
     }
 

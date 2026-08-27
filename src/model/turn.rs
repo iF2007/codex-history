@@ -13,6 +13,10 @@ pub struct Turn {
     pub completed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub items: Vec<Item>,
+    // `task_complete` carries this outside the item stream; live uses it
+    // without exposing a synthetic item to other commands.
+    #[serde(skip)]
+    pub(crate) final_agent_message: Option<String>,
 }
 
 #[cfg(test)]
@@ -32,7 +36,9 @@ mod tests {
             items: vec![Item::UserMessage(MessageItem {
                 text: Some("show me the diff".into()),
                 attributes: Default::default(),
+                phase: None,
             })],
+            final_agent_message: None,
         };
 
         let json = serde_json::to_string(&turn).expect("serialize");

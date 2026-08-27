@@ -567,6 +567,7 @@ mod tests {
                         Item::UserMessage(MessageItem {
                             text: Some("Please inspect the parser regression.".into()),
                             attributes: BTreeMap::new(),
+                            phase: None,
                         }),
                         Item::CommandExecution(CommandExecutionItem {
                             command: Some("cargo test cli::tests".into()),
@@ -588,6 +589,7 @@ mod tests {
                             attributes: BTreeMap::new(),
                         }),
                     ],
+                    final_agent_message: None,
                 },
                 Turn {
                     turn_id: "turn_2".into(),
@@ -599,7 +601,9 @@ mod tests {
                     items: vec![Item::AgentMessage(MessageItem {
                         text: Some("Add export tests before shipping.".into()),
                         attributes: BTreeMap::new(),
+                        phase: None,
                     })],
+                    final_agent_message: None,
                 },
             ],
             items_count: 5,

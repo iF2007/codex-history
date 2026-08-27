@@ -23,6 +23,10 @@ pub struct MessageItem {
     pub text: Option<String>,
     #[serde(default, flatten)]
     pub attributes: BTreeMap<String, Value>,
+    // Runtime message phases are consumed by live but are not part of the
+    // canonical serialized item shape.
+    #[serde(skip)]
+    pub(crate) phase: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -219,6 +223,7 @@ mod tests {
         let item = Item::UserMessage(MessageItem {
             text: Some("please inspect the worktree".into()),
             attributes: BTreeMap::from([("source".into(), Value::String("cli".into()))]),
+            phase: None,
         });
 
         let json = serde_json::to_value(&item).expect("serialize");

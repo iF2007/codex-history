@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::backend::local::LocalBackend;
-use crate::model::{Item, ThreadDetail, Turn};
+use crate::model::{Item, MessageItem, ThreadDetail, Turn};
 use crate::redact::redact_human_text;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,10 +194,17 @@ fn extract_user_message(turn: &Turn) -> Option<String> {
 }
 
 fn extract_final_agent_message(turn: &Turn) -> Option<String> {
-    // 1. Check for explicit final_answer phase
+    if let Some(text) = turn.final_agent_message.as_deref() {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    // Check for explicit final_answer phase
     for item in &turn.items {
         if let Item::AgentMessage(msg) = item {
-            if msg.attributes.get("phase").and_then(Value::as_str) == Some("final_answer") {
+            if message_phase(msg) == Some("final_answer") {
                 if let Some(text) = msg.text.as_deref() {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
@@ -208,7 +215,7 @@ fn extract_final_agent_message(turn: &Turn) -> Option<String> {
         }
     }
 
-    // 2. If turn is completed, find the last agent message
+    // If the turn is completed, find the last agent message.
     if turn.status == "completed" {
         for item in turn.items.iter().rev() {
             if let Item::AgentMessage(msg) = item {
@@ -259,9 +266,7 @@ fn extract_turn_steps(turn: &Turn) -> Vec<String> {
                     }
                 }
             }
-            Item::AgentMessage(msg)
-                if msg.attributes.get("phase").and_then(Value::as_str) == Some("commentary") =>
-            {
+            Item::AgentMessage(msg) if message_phase(msg) == Some("commentary") => {
                 if let Some(text) = msg.text.as_deref() {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
@@ -285,6 +290,13 @@ fn extract_turn_steps(turn: &Turn) -> Vec<String> {
         }
     }
     steps
+}
+
+fn message_phase(message: &MessageItem) -> Option<&str> {
+    message
+        .phase
+        .as_deref()
+        .or_else(|| message.attributes.get("phase").and_then(Value::as_str))
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {
@@ -335,6 +347,7 @@ mod tests {
             started_at: None,
             completed_at: None,
             items,
+            final_agent_message: None,
         }
     }
 

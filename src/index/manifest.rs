@@ -229,6 +229,7 @@ mod tests {
                 started_at: None,
                 completed_at: None,
                 items: Vec::new(),
+                final_agent_message: None,
             }],
             items_count: 0,
             commands_count: 0,

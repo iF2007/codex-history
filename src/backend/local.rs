@@ -941,6 +941,9 @@ fn merge_turn(turns: &mut Vec<Turn>, incoming: Turn) {
         if prefer_incoming {
             existing.status = incoming.status;
         }
+        if let Some(final_agent_message) = incoming.final_agent_message {
+            existing.final_agent_message = Some(final_agent_message);
+        }
         merge_turn_items(&mut existing.items, incoming.items);
         return;
     }
@@ -1027,6 +1030,7 @@ fn attach_pending_command(
             started_at: None,
             completed_at: None,
             items: vec![Item::CommandExecution(pending.item)],
+            final_agent_message: None,
         },
     );
 }
